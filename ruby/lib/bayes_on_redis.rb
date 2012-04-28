@@ -6,24 +6,25 @@ class BayesOnRedis
   ONE_OR_TWO_WORDS_RE = /\b\w{1,2}\b/mi
   NON_ALPHANUMERIC_AND_NON_DOT_RE = /[^\w\.]/mi
 
-  attr_reader :redis, :stopwords
+  attr_reader :redis, :stopwords, :namespace
 
   def initialize(options)
-    @redis = Redis.new(:host => options[:redis_host], :port => options[:redis_port], :db => options[:redis_db])
+    @redis = options[:redis].nil? ? Redis.new(:host => options[:redis_host], :port => options[:redis_port], :db => options[:redis_db]) : options[:redis]
+    @namespace = options[:namespace].empty? ? "" : options[:namespace] + ":"
     @stopwords = Stopword.new
   end
 
   def flushdb
-    @redis.flushdb
+    @redis.del @redis.keys(@namespace + "*").join(" ")
   end
 
   # training for a category
   def train(category, text)
     category = category.downcase
-    @redis.sadd(CATEGORIES_KEY, category)
+    @redis.sadd(@namespace + CATEGORIES_KEY, category)
 
     count_occurance(text).each do |word, count|
-      @redis.hincrby(redis_category_key(category), word, count)
+      @redis.hincrby(@namespace + redis_category_key(category), word, count)
     end
   end
   alias_method :learn, :train
@@ -32,13 +33,13 @@ class BayesOnRedis
     category = category.downcase
 
     count_occurance(text).each do |word, count|
-      word_count_atm = @redis.hget(redis_category_key(category), word)
+      word_count_atm = @redis.hget(@namespace + redis_category_key(category), word)
       if (word_count_atm >= count)
         new_count = (word_count_atm - count)
       else
         new_count = 0
       end
-      @redis.hset(redis_category_key(category), word, new_count)
+      @redis.hset(@namespace + redis_category_key(category), word, new_count)
     end
   end
   alias_method :unlearn, :untrain
@@ -46,14 +47,14 @@ class BayesOnRedis
   def score(text)
     scores = {}
 
-    @redis.smembers(CATEGORIES_KEY).each do |category|
-      words_count_per_category = @redis.hvals(redis_category_key(category)).inject(0) {|sum, score| sum + score.to_i}
-      @redis.srem(CATEGORIES_KEY, category) if words_count_per_category <= 0
+    @redis.smembers(@namespace + CATEGORIES_KEY).each do |category|
+      words_count_per_category = @redis.hvals(@namespace + redis_category_key(category)).inject(0) {|sum, score| sum + score.to_i}
+      @redis.srem(@namespace + CATEGORIES_KEY, category) if words_count_per_category <= 0
 
       scores[category] = 0
 
       count_occurance(text).each do |word, count|
-        tmp_score = @redis.hget(redis_category_key(category), word).to_i
+        tmp_score = @redis.hget(@namespace + redis_category_key(category), word).to_i
         tmp_score = 0.1 if tmp_score <= 0
 
         scores[category] += Math.log(tmp_score / words_count_per_category.to_f)
@@ -83,9 +84,9 @@ class BayesOnRedis
   end
 
   def remove_stopwords
-    @redis.smembers(CATEGORIES_KEY).each do |category|
+    @redis.smembers(@namespace + CATEGORIES_KEY).each do |category|
       @stopwords.to_a.each do |stopword|
-        @redis.hdel(redis_category_key(category), stopword)
+        @redis.hdel(@namespace + redis_category_key(category), stopword)
       end
     end
   end
